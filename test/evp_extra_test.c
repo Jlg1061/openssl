@@ -5014,30 +5014,33 @@ typedef struct {
     int is_aead;
 } EVP_CIPHER_INFO;
 
-static const EVP_CIPHER_INFO *cipher_list = NULL;
+static EVP_CIPHER_INFO *cipher_list = NULL;
 static size_t cipher_list_n = 0;
 
-static int seen_nid(int nid) {
+static int seen_name(const char *name) {
+
+    if (name == NULL){
+        return 1;
+    }
     for (size_t i = 0; i < cipher_list_n; i++) {
-        if (EVP_CIPHER_nid(cipher_list[i].ciph) == nid)
+        if (OPENSSL_strcasecmp(cipher_list[i].name, name) == 0)
             return 1;
     }
     return 0;
 }
 
-static void collect_cipher_cb(const EVP_CIPHER *ciph,
-                              const char *from, const char *to, void *arg)
+static void collect_cipher_cb(const EVP_CIPHER *ciph, void *arg)
 {
-    (void)from; (void)to; (void)arg;
+    (void)arg;
 
     if (ciph == NULL)
         return;
 
+    const char *name0 = EVP_CIPHER_get0_name(ciph);
+    //aparently NID is not reliable
 
-    int nid = EVP_CIPHER_nid(ciph);
-    if (nid == NID_undef || seen_nid(nid))
+    if (name0 == NULL || seen_name(name0))
         return;
-
     if (EVP_CIPHER_get_iv_length(ciph) <= 0)
         return;
 
@@ -5047,8 +5050,8 @@ static void collect_cipher_cb(const EVP_CIPHER *ciph,
 
     if (tmp == NULL)
         return;
+    
     cipher_list = tmp;
-
     EVP_CIPHER_INFO *info = &cipher_list[cipher_list_n];
 
     info->ciph = ciph;
@@ -5067,7 +5070,7 @@ static int setup_cipher_list(void)
     cipher_list = NULL;
     cipher_list_n = 0;
 
-    EVP_CIPHER_do_all(collect_cipher_cb, NULL);
+    EVP_CIPHER_do_all_provided(libctx, collect_cipher_cb, NULL);
     return TEST_true(cipher_list_n > 0);
 }
 static void cleanup_cipher_list(void)
