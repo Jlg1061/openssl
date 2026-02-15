@@ -4999,6 +4999,164 @@ err:
 }
 
 /*
+ * Dynamically discover all applicable ciphers and verifies multi-step
+ * init correctly. This test should require zero manteinance when new
+ * ciphers are added as the discovery loop handles it.
+ * This test focuses stale key-regresion.
+ */
+
+typedef struct {
+    const EVP_CIPHER *ciph;
+    const char *name;
+    int keylen;
+    int ivlen;
+    int mode;
+    int is_aead;
+} EVP_CIPHER_INFO;
+
+static const EVP_CIPHER_INFO *cipher_list = NULL;
+static size_t cipher_list_n = 0;
+
+static int seen_nid(int nid) {
+    for (size_t i = 0; i < cipher_list_n; i++) {
+        if (EVP_CIPHER_nid(cipher_list[i].ciph) == nid)
+            return 1;
+    }
+    return 0;
+}
+
+static void collect_cipher_cb(const EVP_CIPHER *ciph,
+                              const char *from, const char *to, void *arg)
+{
+    (void)from; (void)to; (void)arg;
+
+    if (ciph == NULL)
+        return;
+
+
+    int nid = EVP_CIPHER_nid(ciph);
+    if (nid == NID_undef || seen_nid(nid))
+        return;
+
+    if (EVP_CIPHER_get_iv_length(ciph) <= 0)
+        return;
+
+
+    EVP_CIPHER_INFO *tmp = OPENSSL_realloc(cipher_list,
+                                          (cipher_list_n+1) * sizeof(*tmp));
+
+    if (tmp == NULL)
+        return;
+    cipher_list = tmp;
+
+    EVP_CIPHER_INFO *info = &cipher_list[cipher_list_n];
+
+    info->ciph = ciph;
+    info->name = EVP_CIPHER_get0_name(ciph);
+    info->keylen = EVP_CIPHER_get_key_length(ciph);
+    info->ivlen = EVP_CIPHER_get_iv_length(ciph);
+    info->mode = EVP_CIPHER_get_mode(ciph);
+    info->is_aead = 
+        (EVP_CIPHER_get_flags(ciph) & EVP_CIPH_FLAG_AEAD_CIPHER) != 0;
+
+    cipher_list_n++;
+}
+
+static int setup_cipher_list(void)
+{
+    cipher_list = NULL;
+    cipher_list_n = 0;
+
+    EVP_CIPHER_do_all(collect_cipher_cb, NULL);
+    return TEST_true(cipher_list_n > 0);
+}
+static void cleanup_cipher_list(void)
+{
+    OPENSSL_free(cipher_list);
+    cipher_list = NULL;
+    cipher_list_n = 0;
+}
+
+static int test_evp_multi_step_init(int idx)
+{
+    const EVP_CIPHER_INFO *info = &cipher_list[idx];
+    EVP_CIPHER_CTX *ctx = NULL;
+
+    unsigned char key[EVP_MAX_KEY_LENGTH] = {0};
+    unsigned char iv[EVP_MAX_IV_LENGTH] = {0};
+    unsigned char in[64] = {0};
+    unsigned char out[128] = {0};
+    int blocksz = 0;    
+    int out_len = 0;
+    int fin_len = 0;
+
+    size_t pt_size = 0;
+    char *errmsg = NULL;
+    
+    blocksz = EVP_CIPHER_get_block_size(info->ciph);
+    pt_size = (blocksz > 1) ? (size_t)blocksz * 2 : 31;
+    
+    if (!TEST_ptr(ctx = EVP_CIPHER_CTX_new())){
+        errmsg = "CTX_ALLOC";
+        goto err;
+    }
+
+    if (info->mode == EVP_CIPH_SIV_MODE) {
+        TEST_info("Skipping %s (SIV MODE)", info->name);
+        return 1;
+    }
+    if (!(info->is_aead) && blocksz > 1)
+        EVP_CIPHER_CTX_set_padding(ctx, 0);
+
+    for (int i = 0; i < info->keylen && i < (int)sizeof(key); i++)
+        key[i] = (unsigned char)(0xA0 + i);
+    for (int i = 0; i < info->ivlen && i < (int)sizeof(iv); i++)
+        iv[i] = (unsigned char)(0xB0 + i);
+    
+    // Initialize first with key
+    if (!TEST_true(EVP_EncryptInit_ex(ctx, info->ciph, NULL, key, NULL))) {
+        errmsg = "INIT_KEY_ONLY";
+        goto err;
+    }
+
+    if (!TEST_true(EVP_EncryptInit_ex(ctx, NULL, NULL, NULL, iv))) {
+        errmsg = "INIT_IV_ONLY";
+        goto err;
+    }
+
+
+    for (size_t i = 0; i < pt_size; i++)
+        in[i] = (unsigned char)(0x)
+    return 0;
+
+    if (info->mode == EVP_CIPH_CCM_MODE) {
+        int tmplen = 0;
+
+        if (!TEST_true(EVP_EncryptUpdate(ctx,
+                NULL, &tmplen, NULL, (int)pt_size))) {
+            errmsg = "CCM_DECLARE_PTLEN";
+            goto err;
+        }
+    }
+
+    if (!TEST_true(EVP_EncryptUpdate(ctx, out, &out_len, in, (int)pt_size))) {
+        errmsg = "ENCRYPT_UPDATE";
+        goto err;
+    }
+
+    if (!TEST_true(EVP_EncryptFinal_ex(ctx, out + out_len, &fin_len))) {
+        errmsg = "ENCRYPT_FINAL";
+        goto err;
+    }
+
+    out_len += fin_len;
+
+
+
+}
+
+
+/*
  * Test step-wise cipher initialization via EVP_CipherInit_ex where the
  * arguments are given one at a time and a final adjustment to the enc
  * parameter sets the correct operation.
@@ -5064,7 +5222,7 @@ static int test_evp_init_seq(int idx)
     if (!TEST_true(EVP_CipherFinal_ex(ctx, outbuf + outlen1, &outlen2))) {
         errmsg = "CIPHER_FINAL";
         goto err;
-    }
+  crypto/evp/names.c  }
     if (!TEST_mem_eq(t->expected, t->expectedlen, outbuf, outlen1 + outlen2)) {
         errmsg = "WRONG_RESULT";
         goto err;
