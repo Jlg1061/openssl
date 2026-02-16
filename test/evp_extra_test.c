@@ -5241,7 +5241,8 @@ static int test_evp_init_seq(int idx)
     if (!TEST_true(EVP_CipherFinal_ex(ctx, outbuf + outlen1, &outlen2))) {
         errmsg = "CIPHER_FINAL";
         goto err;
-  crypto/evp/names.c  }
+    }
+
     if (!TEST_mem_eq(t->expected, t->expectedlen, outbuf, outlen1 + outlen2)) {
         errmsg = "WRONG_RESULT";
         goto err;
