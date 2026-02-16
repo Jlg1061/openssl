@@ -5083,24 +5083,42 @@ static void cleanup_cipher_list(void)
 static int test_evp_multi_step_init(int idx)
 {
     const EVP_CIPHER_INFO *info = &cipher_list[idx];
-    EVP_CIPHER_CTX *ctx = NULL;
-    const int TAGLEN = 16;
+    EVP_CIPHER_CTX *ctx1 = NULL; // used to test multi step init KEY->IV
+    EVP_CIPHER_CTX *ctx2 = NULL; // used to test multi step init IV->KEY
+    EVP_CIPHER_CTX *ctx_base = NULL; // base test with single step init
+    
     unsigned char key[EVP_MAX_KEY_LENGTH] = {0};
     unsigned char iv[EVP_MAX_IV_LENGTH] = {0};
-    unsigned char in[64] = {0};
-    unsigned char out[128] = {0};
-    unsigned char tag[16] = {0};
-    int blocksz = 0;    
-    int out_len = 0;
-    int fin_len = 0;
-
+    
     size_t pt_size = 0;
+    unsigned char pt[128] = {0};
+    
+    unsigned char ct1[128] = {0};
+    int ct1_len = 0;
+    int ct1_fin_len = 0;
+
+
+    unsigned char ct2[128] = {0};
+    int ct2_len = 0;
+    int ct2_fin_len = 0;
+
+    unsigned char ct_base[128] = {0};
+    int ct_base_len = 0;
+    int ct_base_fin_len = 0;
+    
+    const int TAGLEN = 16;
+    unsigned char tag1[TAGLEN] = {0};
+    unsigned char tag2[TAGLEN] = {0};
+    unsigned char tag_base[TAGLEN] = {0};
+ 
+    int blocksz = 0;    
+
     char *errmsg = NULL;
     
     blocksz = EVP_CIPHER_get_block_size(info->ciph);
     pt_size = (blocksz > 1) ? (size_t)blocksz * 2 : 31;
     
-    if (!TEST_ptr(ctx = EVP_CIPHER_CTX_new())){
+    if (!TEST_ptr(ctx1 = EVP_CIPHER_CTX_new())){
         errmsg = "CTX_ALLOC";
         goto err;
     }
@@ -5110,13 +5128,13 @@ static int test_evp_multi_step_init(int idx)
         return 1;
     }
 
-    EVP_EncryptInit_ex(ctx, info->ciph, NULL, NULL, NULL);
+    EVP_EncryptInit_ex(ctx1, info->ciph, NULL, NULL, NULL);
 
     if (!(info->is_aead) && blocksz > 1)
-        EVP_CIPHER_CTX_set_padding(ctx, 0);
+        EVP_CIPHER_CTX_set_padding(ctx1, 0);
 
     if (info->is_aead) {
-        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG,
+        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_AEAD_SET_TAG,
                                        TAGLEN, NULL))) {
         errmsg = "CCM_SET_TAGLEN";
         goto err;
@@ -5129,48 +5147,109 @@ static int test_evp_multi_step_init(int idx)
         iv[i] = (unsigned char)(0xB0 + i);
     
     // Initialize first with key
-    if (!TEST_true(EVP_EncryptInit_ex(ctx, info->ciph, NULL, key, NULL))) {
+    if (!TEST_true(EVP_EncryptInit_ex(ctx1, info->ciph, NULL, key, NULL))) {
         errmsg = "INIT_KEY_ONLY";
         goto err;
     }
 
-    if (!TEST_true(EVP_EncryptInit_ex(ctx, NULL, NULL, NULL, iv))) {
+    if (!TEST_true(EVP_EncryptInit_ex(ctx1, NULL, NULL, NULL, iv))) {
         errmsg = "INIT_IV_ONLY";
         goto err;
     }
 
 
     for (size_t i = 0; i < pt_size; i++)
-        in[i] = (unsigned char)(0x)
+        pt[i] = (unsigned char)(0xA0)
 
     if (info->is_aead && info->mode == EVP_CIPH_CCM_MODE) {
         int tmplen = 0;
 
-        if (!TEST_true(EVP_EncryptUpdate(ctx,
+        if (!TEST_true(EVP_EncryptUpdate(ctx1,
                 NULL, &tmplen, NULL, (int)pt_size))) {
             errmsg = "CCM_DECLARE_PTLEN";
             goto err;
         }        
     }
 
-    if (!TEST_true(EVP_EncryptUpdate(ctx, out, &out_len, in, (int)pt_size))) {
+    if (!TEST_true(EVP_EncryptUpdate(ctx1, ct1, &ct1_len, pt, (int)pt_size))) {
+
         errmsg = "ENCRYPT_UPDATE";
         goto err;
     }
 
-    if (!TEST_true(EVP_EncryptFinal_ex(ctx, out + out_len, &fin_len))) {
+    if (!TEST_true(EVP_EncryptFinal_ex(ctx1, ct1 + ct1_len, &ct1_fin_len))) {
         errmsg = "ENCRYPT_FINAL";
         goto err;
     }
 
-    out_len += fin_len;
+    ct1_len += ct1_fin_len;
     if (info->is_aead) {
-        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG,
-                                       TAGLEN, tag))) {
+        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_AEAD_GET_TAG,
+                                       TAGLEN, tag1))) {
         errmsg = "GET_TAG";
         goto err;
         }
     }
+
+    // INIT IV then KEY
+    if (!TEST_ptr(ctx2 = EVP_CIPHER_CTX_new())){
+        errmsg = "CTX_ALLOC";
+        goto err;
+    }
+        
+    EVP_EncryptInit_ex(ctx2, info->ciph, NULL, NULL, NULL);
+
+    if (!(info->is_aead) && blocksz > 1)
+        EVP_CIPHER_CTX_set_padding(ctx2, 0);
+
+    if (info->is_aead) {
+        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_AEAD_SET_TAG,
+                                       TAGLEN, NULL))) {
+        errmsg = "CCM_SET_TAGLEN";
+        goto err;
+        }
+    }
+    // Initialize first with IV
+    if (!TEST_true(EVP_EncryptInit_ex(ctx2, info->ciph, NULL, NULL, iv))) {
+        errmsg = "INIT_KEY_ONLY";
+        goto err;
+    }
+
+    if (!TEST_true(EVP_EncryptInit_ex(ctx2, NULL, NULL, key, NULL))) {
+        errmsg = "INIT_IV_ONLY";
+        goto err;
+    }
+
+
+    if (info->is_aead && info->mode == EVP_CIPH_CCM_MODE) {
+        int tmplen = 0;
+
+        if (!TEST_true(EVP_EncryptUpdate(ctx2,
+                NULL, &tmplen, NULL, (int)pt_size))) {
+            errmsg = "CCM_DECLARE_PTLEN";
+            goto err;
+        }        
+    }
+
+    if (!TEST_true(EVP_EncryptUpdate(ctx2, ct2, &ct2_len, pt, (int)pt_size))) {
+        errmsg = "ENCRYPT_UPDATE";
+        goto err;
+    }
+
+    if (!TEST_true(EVP_EncryptFinal_ex(ctx2, ct2 + ct2_len, &ct2_fin_len))) {
+        errmsg = "ENCRYPT_FINAL";
+        goto err;
+    }
+
+    ct2_len += ct2_fin_len;
+    if (info->is_aead) {
+        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_AEAD_GET_TAG,
+                                       TAGLEN, tag2))) {
+        errmsg = "GET_TAG";
+        goto err;
+        }
+    }
+    
 
 }
 
