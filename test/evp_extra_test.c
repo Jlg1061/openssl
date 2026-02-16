@@ -5084,11 +5084,12 @@ static int test_evp_multi_step_init(int idx)
 {
     const EVP_CIPHER_INFO *info = &cipher_list[idx];
     EVP_CIPHER_CTX *ctx = NULL;
-
+    const int TAGLEN = 16;
     unsigned char key[EVP_MAX_KEY_LENGTH] = {0};
     unsigned char iv[EVP_MAX_IV_LENGTH] = {0};
     unsigned char in[64] = {0};
     unsigned char out[128] = {0};
+    unsigned char tag[16] = {0};
     int blocksz = 0;    
     int out_len = 0;
     int fin_len = 0;
@@ -5108,8 +5109,19 @@ static int test_evp_multi_step_init(int idx)
         TEST_info("Skipping %s (SIV MODE)", info->name);
         return 1;
     }
+
+    EVP_EncryptInit_ex(ctx, info->ciph, NULL, NULL, NULL);
+
     if (!(info->is_aead) && blocksz > 1)
         EVP_CIPHER_CTX_set_padding(ctx, 0);
+
+    if (info->is_aead) {
+        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG,
+                                       TAGLEN, NULL))) {
+        errmsg = "CCM_SET_TAGLEN";
+        goto err;
+        }   
+    }
 
     for (int i = 0; i < info->keylen && i < (int)sizeof(key); i++)
         key[i] = (unsigned char)(0xA0 + i);
@@ -5130,16 +5142,15 @@ static int test_evp_multi_step_init(int idx)
 
     for (size_t i = 0; i < pt_size; i++)
         in[i] = (unsigned char)(0x)
-    return 0;
 
-    if (info->mode == EVP_CIPH_CCM_MODE) {
+    if (info->is_aead && info->mode == EVP_CIPH_CCM_MODE) {
         int tmplen = 0;
 
         if (!TEST_true(EVP_EncryptUpdate(ctx,
                 NULL, &tmplen, NULL, (int)pt_size))) {
             errmsg = "CCM_DECLARE_PTLEN";
             goto err;
-        }
+        }        
     }
 
     if (!TEST_true(EVP_EncryptUpdate(ctx, out, &out_len, in, (int)pt_size))) {
@@ -5153,8 +5164,13 @@ static int test_evp_multi_step_init(int idx)
     }
 
     out_len += fin_len;
-
-
+    if (info->is_aead) {
+        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG,
+                                       TAGLEN, tag))) {
+        errmsg = "GET_TAG";
+        goto err;
+        }
+    }
 
 }
 
