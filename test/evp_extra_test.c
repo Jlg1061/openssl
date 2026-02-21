@@ -5012,9 +5012,9 @@ typedef struct {
     int ivlen;
     int mode;
     int is_aead;
-} EVP_CIPHER_INFO;
+} EVP_CIPHER_TEST_INFO;
 
-static EVP_CIPHER_INFO *cipher_list = NULL;
+static EVP_CIPHER_TEST_INFO *cipher_list = NULL;
 static size_t cipher_list_n = 0;
 
 static int seen_name(const char *name) {
@@ -5029,7 +5029,7 @@ static int seen_name(const char *name) {
     return 0;
 }
 
-static void collect_cipher_cb(const EVP_CIPHER *ciph, void *arg)
+static void collect_cipher_cb(EVP_CIPHER *ciph, void *arg)
 {
     (void)arg;
 
@@ -5045,14 +5045,16 @@ static void collect_cipher_cb(const EVP_CIPHER *ciph, void *arg)
         return;
 
 
-    EVP_CIPHER_INFO *tmp = OPENSSL_realloc(cipher_list,
+    EVP_CIPHER_TEST_INFO *tmp = OPENSSL_realloc(cipher_list,
                                           (cipher_list_n+1) * sizeof(*tmp));
 
     if (tmp == NULL)
         return;
     
     cipher_list = tmp;
-    EVP_CIPHER_INFO *info = &cipher_list[cipher_list_n];
+    EVP_CIPHER_TEST_INFO *info = &cipher_list[cipher_list_n];
+    if (!EVP_CIPHER_up_ref(ciph))
+        return;
 
     info->ciph = ciph;
     info->name = EVP_CIPHER_get0_name(ciph);
@@ -5070,7 +5072,7 @@ static int setup_cipher_list(void)
     cipher_list = NULL;
     cipher_list_n = 0;
 
-    EVP_CIPHER_do_all_provided(libctx, collect_cipher_cb, NULL);
+    EVP_CIPHER_do_all_provided(NULL, collect_cipher_cb, NULL);
     return TEST_true(cipher_list_n > 0);
 }
 static void cleanup_cipher_list(void)
@@ -5082,7 +5084,7 @@ static void cleanup_cipher_list(void)
 
 static int test_evp_multi_step_init(int idx)
 {
-    const EVP_CIPHER_INFO *info = &cipher_list[idx];
+    const EVP_CIPHER_TEST_INFO *info = &cipher_list[idx];
     EVP_CIPHER_CTX *ctx1 = NULL; // used to test multi step init KEY->IV
     EVP_CIPHER_CTX *ctx2 = NULL; // used to test multi step init IV->KEY
     EVP_CIPHER_CTX *ctx_base = NULL; // base test with single step init
@@ -5107,9 +5109,9 @@ static int test_evp_multi_step_init(int idx)
     int ct_base_fin_len = 0;
     
     const int TAGLEN = 16;
-    unsigned char tag1[TAGLEN] = {0};
-    unsigned char tag2[TAGLEN] = {0};
-    unsigned char tag_base[TAGLEN] = {0};
+    unsigned char tag1[16] = {0};
+    unsigned char tag2[16] = {0};
+    unsigned char tag_base[16] = {0};
  
     int blocksz = 0;    
 
@@ -5130,15 +5132,18 @@ static int test_evp_multi_step_init(int idx)
 
     EVP_EncryptInit_ex(ctx1, info->ciph, NULL, NULL, NULL);
 
+    /* disable padding for non-aead ciphers for comparison to work with block aligned pt */
     if (!(info->is_aead) && blocksz > 1)
         EVP_CIPHER_CTX_set_padding(ctx1, 0);
 
     if (info->is_aead) {
-        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_AEAD_SET_TAG,
-                                       TAGLEN, NULL))) {
-        errmsg = "CCM_SET_TAGLEN";
-        goto err;
-        }   
+        if (info->mode == EVP_CIPH_CCM_MODE){
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_AEAD_SET_TAG,
+                                        TAGLEN, NULL))) {
+            errmsg = "CCM_SET_TAGLEN";
+            goto err;
+            }
+        }
     }
 
     for (int i = 0; i < info->keylen && i < (int)sizeof(key); i++)
@@ -5159,7 +5164,7 @@ static int test_evp_multi_step_init(int idx)
 
 
     for (size_t i = 0; i < pt_size; i++)
-        pt[i] = (unsigned char)(0xA0)
+        pt[i] = (unsigned char)(0xA0);
 
     if (info->is_aead && info->mode == EVP_CIPH_CCM_MODE) {
         int tmplen = 0;
@@ -5184,14 +5189,21 @@ static int test_evp_multi_step_init(int idx)
 
     ct1_len += ct1_fin_len;
     if (info->is_aead) {
-        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_AEAD_GET_TAG,
-                                       TAGLEN, tag1))) {
-        errmsg = "GET_TAG";
-        goto err;
+        if (info->mode == EVP_CIPH_GCM_MODE) {
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_GCM_GET_TAG, TAGLEN, tag1))) {
+                errmsg = "GCM_TAG";
+                goto err;
+            }
+        } else {
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_AEAD_GET_TAG,
+                                        TAGLEN, tag1))) {
+            errmsg = "GET_TAG";
+            goto err;
+            }
         }
     }
 
-    // INIT IV then KEY
+    // INIT IV then KEY ctx2
     if (!TEST_ptr(ctx2 = EVP_CIPHER_CTX_new())){
         errmsg = "CTX_ALLOC";
         goto err;
@@ -5203,10 +5215,12 @@ static int test_evp_multi_step_init(int idx)
         EVP_CIPHER_CTX_set_padding(ctx2, 0);
 
     if (info->is_aead) {
-        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_AEAD_SET_TAG,
-                                       TAGLEN, NULL))) {
-        errmsg = "CCM_SET_TAGLEN";
-        goto err;
+        if (info->mode == EVP_CIPH_CCM_MODE){
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_AEAD_SET_TAG,
+                                        TAGLEN, NULL))) {
+            errmsg = "CCM_SET_TAGLEN";
+            goto err;
+            }
         }
     }
     // Initialize first with IV
@@ -5243,14 +5257,122 @@ static int test_evp_multi_step_init(int idx)
 
     ct2_len += ct2_fin_len;
     if (info->is_aead) {
-        if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_AEAD_GET_TAG,
-                                       TAGLEN, tag2))) {
-        errmsg = "GET_TAG";
+        if (info->mode == EVP_CIPH_GCM_MODE) {
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_GCM_GET_TAG, TAGLEN, tag2))) {
+                errmsg = "GCM_TAG";
+                goto err;
+            }
+        } else {
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_AEAD_GET_TAG,
+                                        TAGLEN, tag2))) {
+            errmsg = "GET_TAG";
+            goto err;
+            }
+        }
+    }
+    // single step initialization 
+    if (!TEST_ptr(ctx_base = EVP_CIPHER_CTX_new())){
+        errmsg = "CTX_ALLOC";
         goto err;
+    }
+        
+    EVP_EncryptInit_ex(ctx_base, info->ciph, NULL, NULL, NULL);
+
+    if (!(info->is_aead) && blocksz > 1)
+        EVP_CIPHER_CTX_set_padding(ctx_base, 0);
+
+    if (info->is_aead) {
+        if (info->mode == EVP_CIPH_CCM_MODE){
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx_base, EVP_CTRL_AEAD_SET_TAG,
+                                        TAGLEN, NULL))) {
+            errmsg = "CCM_SET_TAGLEN";
+            goto err;
+            }
+        }
+    }
+    // Initialize in a single step
+    if (!TEST_true(EVP_EncryptInit_ex(ctx_base, info->ciph, NULL, key, iv))) {
+        errmsg = "SINGLE_STEP_IV";
+        goto err;
+    }
+
+
+    if (info->is_aead && info->mode == EVP_CIPH_CCM_MODE) {
+        int tmplen = 0;
+
+        if (!TEST_true(EVP_EncryptUpdate(ctx_base,
+                NULL, &tmplen, NULL, (int)pt_size))) {
+            errmsg = "CCM_DECLARE_PTLEN";
+            goto err;
+        }        
+    }
+
+    if (!TEST_true(EVP_EncryptUpdate(ctx_base, ct_base, 
+                                        &ct_base_len, pt, (int)pt_size))) {
+        errmsg = "ENCRYPT_UPDATE";
+        goto err;
+    }
+
+    if (!TEST_true(EVP_EncryptFinal_ex(ctx_base, ct_base + ct_base_len,
+                                        &ct_base_fin_len))) {
+        errmsg = "ENCRYPT_FINAL_ONE_STEP";
+        goto err;
+    }
+
+    ct_base_len += ct_base_fin_len;
+    if (info->is_aead) {
+        if (info->mode == EVP_CIPH_GCM_MODE) {
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx_base, EVP_CTRL_GCM_GET_TAG, TAGLEN, tag_base))) {
+                errmsg = "GCM_TAG";
+                goto err;
+            }
+        } else {
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx_base, EVP_CTRL_AEAD_GET_TAG,
+                                        TAGLEN, tag_base))) {
+            errmsg = "GET_TAG";
+            goto err;
+            }
         }
     }
     
+    // Comparison
+    /* Compare single-call vs key->iv */
+    if (!TEST_size_t_eq(ct_base_len, ct1_len)
+        || !TEST_mem_eq(ct_base, ct_base_len, ct1, ct1_len)) {
+        errmsg = "CT_MISMATCH_SINGLE_vs_KEYIV";
+        goto err;
+    }
 
+    /* Compare single-call vs iv->key */
+    if (!TEST_size_t_eq(ct_base_len, ct2_len)
+        || !TEST_mem_eq(ct_base, ct_base_len, ct2, ct2_len)) {
+        errmsg = "CT_MISMATCH_SINGLE_vs_IVKEY";
+        goto err;
+    }
+
+    if (info->is_aead) {
+        if (!TEST_mem_eq(tag_base, TAGLEN, tag1, TAGLEN)) {
+            errmsg = "TAG_MISMATCH_SINGLE_vs_KEYIV";
+            goto err;
+        }
+
+        if (!TEST_mem_eq(tag_base, TAGLEN, tag2, TAGLEN)) {
+            errmsg = "TAG_MISMATCH_SINGLE_vs_IVKEY";
+            goto err;
+        }
+    }
+
+err:
+    int testresult = 1;
+    if (errmsg != NULL) {
+        TEST_info("evp_multi_step_integrity_test %d: %s", idx, errmsg);
+        testresult = 0;
+    }
+    EVP_CIPHER_CTX_free(ctx1);
+    EVP_CIPHER_CTX_free(ctx2);
+    EVP_CIPHER_CTX_free(ctx_base);
+    // EVP_CIPHER_free(type);
+    return testresult;
 }
 
 
@@ -6066,7 +6188,8 @@ end:
 
 #ifndef OPENSSL_NO_EC
 /*
- * Test that EVP_PKEY_sign_init_ex2() with a mismatched key/signature algorithm
+ * Tlslslslsls
+st that EVP_PKEY_sign_init_ex2() with a mismatched key/signature algorithm
  * (e.g. RSA key with ECDSA signature) correctly fails.
  */
 static int test_EVP_PKEY_sign_init_mismatched_key_alg(void)
@@ -7098,6 +7221,9 @@ int setup_tests(void)
 
     ADD_TEST(test_names_do_all);
 
+    setup_cipher_list();
+    ADD_ALL_TESTS(test_evp_multi_step_init, cipher_list_n);
+    //cleanup_cipher_list();
     ADD_ALL_TESTS(test_evp_init_seq, OSSL_NELEM(evp_init_tests));
     ADD_ALL_TESTS(test_evp_reset, OSSL_NELEM(evp_reset_tests));
     ADD_ALL_TESTS(test_evp_reinit_seq, OSSL_NELEM(evp_reinit_tests));
