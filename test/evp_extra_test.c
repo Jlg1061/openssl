@@ -5082,7 +5082,7 @@ static void cleanup_cipher_list(void)
     cipher_list_n = 0;
 }
 
-static int test_evp_multi_step_init(int idx)
+static int test_evp_diff_order_init(int idx)
 {
     const EVP_CIPHER_TEST_INFO *info = &cipher_list[idx];
     EVP_CIPHER_CTX *ctx1 = NULL; // used to test multi step init KEY->IV
@@ -5132,16 +5132,17 @@ static int test_evp_multi_step_init(int idx)
 
     EVP_EncryptInit_ex(ctx1, info->ciph, NULL, NULL, NULL);
 
-    /* disable padding for non-aead ciphers for comparison to work with block aligned pt */
-    if (!(info->is_aead) && blocksz > 1)
-        EVP_CIPHER_CTX_set_padding(ctx1, 0);
 
     if (info->is_aead) {
         if (info->mode == EVP_CIPH_CCM_MODE){
-            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_AEAD_SET_TAG,
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_CCM_SET_IVLEN, info->ivlen, NULL))) {
+                errmsg = "CCM_SET_IVLEN";
+                goto err;
+            }
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_CCM_SET_TAG,
                                         TAGLEN, NULL))) {
-            errmsg = "CCM_SET_TAGLEN";
-            goto err;
+                errmsg = "CCM_SET_TAGLEN";
+                goto err;
             }
         }
     }
@@ -5152,7 +5153,7 @@ static int test_evp_multi_step_init(int idx)
         iv[i] = (unsigned char)(0xB0 + i);
     
     // Initialize first with key
-    if (!TEST_true(EVP_EncryptInit_ex(ctx1, info->ciph, NULL, key, NULL))) {
+    if (!TEST_true(EVP_EncryptInit_ex(ctx1, NULL, NULL, key, NULL))) {
         errmsg = "INIT_KEY_ONLY";
         goto err;
     }
@@ -5161,6 +5162,11 @@ static int test_evp_multi_step_init(int idx)
         errmsg = "INIT_IV_ONLY";
         goto err;
     }
+
+    /* disable padding for non-aead ciphers for comparison to work with block aligned pt */
+    if (!(info->is_aead) && blocksz > 1)
+        EVP_CIPHER_CTX_set_padding(ctx1, 0);
+
 
 
     for (size_t i = 0; i < pt_size; i++)
@@ -5194,6 +5200,11 @@ static int test_evp_multi_step_init(int idx)
                 errmsg = "GCM_TAG";
                 goto err;
             }
+        } else if (info->mode == EVP_CIPH_CCM_MODE){
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_CCM_GET_TAG, TAGLEN, tag1))) {
+                errmsg = "CCM_TAG";
+                goto err;
+            }
         } else {
             if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx1, EVP_CTRL_AEAD_GET_TAG,
                                         TAGLEN, tag1))) {
@@ -5211,20 +5222,21 @@ static int test_evp_multi_step_init(int idx)
         
     EVP_EncryptInit_ex(ctx2, info->ciph, NULL, NULL, NULL);
 
-    if (!(info->is_aead) && blocksz > 1)
-        EVP_CIPHER_CTX_set_padding(ctx2, 0);
-
     if (info->is_aead) {
         if (info->mode == EVP_CIPH_CCM_MODE){
-            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_AEAD_SET_TAG,
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_CCM_SET_IVLEN, info->ivlen, NULL))) {
+                errmsg = "CCM_SET_IVLEN";
+                goto err;
+            }
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_CCM_SET_TAG,
                                         TAGLEN, NULL))) {
-            errmsg = "CCM_SET_TAGLEN";
-            goto err;
+                errmsg = "CCM_SET_TAGLEN";
+                goto err;
             }
         }
     }
     // Initialize first with IV
-    if (!TEST_true(EVP_EncryptInit_ex(ctx2, info->ciph, NULL, NULL, iv))) {
+    if (!TEST_true(EVP_EncryptInit_ex(ctx2, NULL, NULL, NULL, iv))) {
         errmsg = "INIT_KEY_ONLY";
         goto err;
     }
@@ -5233,6 +5245,10 @@ static int test_evp_multi_step_init(int idx)
         errmsg = "INIT_IV_ONLY";
         goto err;
     }
+
+    if (!(info->is_aead) && blocksz > 1)
+        EVP_CIPHER_CTX_set_padding(ctx2, 0);
+
 
 
     if (info->is_aead && info->mode == EVP_CIPH_CCM_MODE) {
@@ -5262,6 +5278,11 @@ static int test_evp_multi_step_init(int idx)
                 errmsg = "GCM_TAG";
                 goto err;
             }
+        } else if (info->mode == EVP_CIPH_CCM_MODE){
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_CCM_GET_TAG, TAGLEN, tag2))) {
+                errmsg = "CCM_TAG";
+                goto err;
+            }
         } else {
             if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx2, EVP_CTRL_AEAD_GET_TAG,
                                         TAGLEN, tag2))) {
@@ -5278,23 +5299,29 @@ static int test_evp_multi_step_init(int idx)
         
     EVP_EncryptInit_ex(ctx_base, info->ciph, NULL, NULL, NULL);
 
-    if (!(info->is_aead) && blocksz > 1)
-        EVP_CIPHER_CTX_set_padding(ctx_base, 0);
-
     if (info->is_aead) {
         if (info->mode == EVP_CIPH_CCM_MODE){
-            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx_base, EVP_CTRL_AEAD_SET_TAG,
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx_base, EVP_CTRL_CCM_SET_IVLEN, info->ivlen, NULL))) {
+                errmsg = "CCM_SET_IVLEN";
+                goto err;
+            }
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx_base, EVP_CTRL_CCM_SET_TAG,
                                         TAGLEN, NULL))) {
-            errmsg = "CCM_SET_TAGLEN";
-            goto err;
+                errmsg = "CCM_SET_TAGLEN";
+                goto err;
             }
         }
     }
+
     // Initialize in a single step
-    if (!TEST_true(EVP_EncryptInit_ex(ctx_base, info->ciph, NULL, key, iv))) {
+    if (!TEST_true(EVP_EncryptInit_ex(ctx_base, NULL, NULL, key, iv))) {
         errmsg = "SINGLE_STEP_IV";
         goto err;
     }
+
+    if (!(info->is_aead) && blocksz > 1)
+        EVP_CIPHER_CTX_set_padding(ctx_base, 0);
+
 
 
     if (info->is_aead && info->mode == EVP_CIPH_CCM_MODE) {
@@ -5323,6 +5350,11 @@ static int test_evp_multi_step_init(int idx)
     if (info->is_aead) {
         if (info->mode == EVP_CIPH_GCM_MODE) {
             if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx_base, EVP_CTRL_GCM_GET_TAG, TAGLEN, tag_base))) {
+                errmsg = "GCM_TAG";
+                goto err;
+            }
+        } else if (info->mode == EVP_CIPH_CCM_MODE){
+            if (!TEST_true(EVP_CIPHER_CTX_ctrl(ctx_base, EVP_CTRL_CCM_GET_TAG, TAGLEN, tag_base))) {
                 errmsg = "GCM_TAG";
                 goto err;
             }
@@ -5365,7 +5397,7 @@ static int test_evp_multi_step_init(int idx)
 err:
     int testresult = 1;
     if (errmsg != NULL) {
-        TEST_info("evp_multi_step_integrity_test %d: %s", idx, errmsg);
+        TEST_info("evp_multi_step_integrity_test %d, %s: %s", idx, errmsg, info->name);
         testresult = 0;
     }
     EVP_CIPHER_CTX_free(ctx1);
@@ -5374,6 +5406,7 @@ err:
     // EVP_CIPHER_free(type);
     return testresult;
 }
+
 
 
 /*
@@ -7222,7 +7255,7 @@ int setup_tests(void)
     ADD_TEST(test_names_do_all);
 
     setup_cipher_list();
-    ADD_ALL_TESTS(test_evp_multi_step_init, cipher_list_n);
+    ADD_ALL_TESTS(test_evp_diff_order_init, cipher_list_n);
     //cleanup_cipher_list();
     ADD_ALL_TESTS(test_evp_init_seq, OSSL_NELEM(evp_init_tests));
     ADD_ALL_TESTS(test_evp_reset, OSSL_NELEM(evp_reset_tests));
