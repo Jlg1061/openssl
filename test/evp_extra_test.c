@@ -7758,6 +7758,7 @@ int setup_tests(void)
     setup_cipher_list();
     ADD_ALL_TESTS(test_evp_diff_order_init, cipher_list_n);
     ADD_ALL_TESTS(test_evp_stale_key_reinit, cipher_list_n);
+    ADD_ALL_TESTS(test_evp_decrypt_roundtrip_multistep, cipher_list_n);
     //cleanup_cipher_list();
     ADD_ALL_TESTS(test_evp_init_seq, OSSL_NELEM(evp_init_tests));
     ADD_ALL_TESTS(test_evp_reset, OSSL_NELEM(evp_reset_tests));
